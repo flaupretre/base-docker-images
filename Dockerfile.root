@@ -1,0 +1,26 @@
+#
+# root base - Every other images derive from this one
+#=============================================================================
+
+FROM root-root:local
+
+ARG STAGE
+
+ARG DUSER_UID
+ARG DUSER_GID
+ARG SYSFUNC_VERSION
+
+#--
+
+USER 0
+
+ADD docker/${STAGE} /docker.${STAGE}/
+RUN /docker.${STAGE}/build.sh
+
+ENTRYPOINT [] # Security
+
+STOPSIGNAL SIGTERM
+
+CMD dwrap run
+
+USER ${DUSER_UID}

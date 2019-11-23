@@ -1,0 +1,285 @@
+
+version: 2.1
+
+orbs:
+  docker: ledger/docker@volatile
+
+executors:
+  docker-cli:
+    docker:
+      - image: circleci/buildpack-deps:stretch
+
+commands:
+  init:
+    description: Initialize work environment
+    parameters:
+      # Note: remote-docker must be set when using a 'docker' executor
+      remote-docker:
+        type: boolean
+        default: true
+    steps:
+      - checkout
+      - when:
+          condition: << parameters.remote-docker >>
+          steps:
+            - setup_remote_docker
+      - run:
+          name: Get global variables
+          command: cat vars.sh >>$BASH_ENV
+      - attach_workspace:
+          at: /tmp/workspace
+  load-stages:
+    description: Restore saved images
+    parameters:
+      stages:
+        type: string
+    steps:
+      - run:
+          name: Load images built by previous jobs
+          command: |
+            for stage in << parameters.stages >> ; do
+              if ! docker inspect $(img_name $stage) >/dev/null 2>&1 ; then
+                docker load -i /tmp/workspace/image-$stage.tar
+                # Check that image exists
+                docker inspect $(img_name $stage) >/dev/null
+              fi
+            done
+  build-stage:
+    description: Build an image
+    parameters:
+      stage:
+        type: string
+        default: ""
+      from:
+        type: string
+        default: ""
+      options:
+        description: Additional options to be passed to the 'docker build' command
+        type: string
+        default: ""
+      docker_hub_login:
+        description: Login to docker before running docker build?
+        type: boolean
+        default: false
+    steps:
+      - when:
+          condition: << parameters.docker_hub_login >>
+          steps:
+            docker/docker_hub_login
+      - load-stages:
+          stages: "<< parameters.from >>"
+      - run:
+          name: Build image
+          command: ./dbuild.sh << parameters.stage >> <<parameters.options >>
+      - run:
+          name: Archive Docker image
+          command: docker save -o image-<< parameters.stage >>.tar $(img_name << parameters.stage >>)
+      - persist_to_workspace:
+          root: .
+          paths:
+            - ./image-<< parameters.stage >>.tar
+  test-stage:
+    description: Run tests for a given stage
+    parameters:
+      stage:
+        type: string
+      options:
+        description: Options for docker run command
+        type: string
+        default: ""
+    steps:
+      - load-stages:
+          stages: << parameters.stage >>
+      - run:
+          name: Run image tests
+          command: |
+              RUN_OPTIONS=''
+              [ -f docker/<< parameters.stage >>/env.sh ] && TESTING=y ACTION=run source docker/<< parameters.stage >>/env.sh
+              docker run -e TESTING=y $RUN_OPTIONS << parameters.options >> "$(img_name << parameters.stage >>)" dwrap test
+  publish-stage:
+    description: Publish an image to Docker Hub
+    parameters:
+      stage:
+        type: string
+    steps:
+      - load-stages:
+          stages: << parameters.stage >>
+      - docker/docker_hub_login
+      - run:
+          name: Publish image
+          command: docker push $(img_name << parameters.stage >>)
+
+jobs:
+  generic-build-job:
+    description: Simple build job
+    parameters:
+      stage:
+        type: string
+        default: ""
+      from:
+        type: string
+        default: ""
+      options:
+        description: Additional options to be passed to the 'docker build' command
+        type: string
+        default: ""
+      docker_hub_login:
+        description: Login to docker before running docker build?
+        type: boolean
+        default: false
+      executor:
+        type: executor
+        default: docker-cli
+      remote-docker:
+        type: boolean
+        default: true
+    executor: << parameters.executor >>
+    steps:
+      - init:
+          remote-docker: << parameters.remote-docker >>
+      - build-stage:
+          stage: << parameters.stage >>
+          from: "<< parameters.from >>"
+          options: "<< parameters.options >>"
+          docker_hub_login: "<< parameters.docker_hub_login >>"
+  generic-test-job:
+    parameters:
+      stage:
+        type: string
+      options:
+        description: Options for docker run command
+        type: string
+        default: ""
+      executor:
+        type: executor
+        default: docker-cli
+      remote-docker:
+        type: boolean
+        default: true
+    executor: << parameters.executor >>
+    steps:
+      - init:
+          remote-docker: << parameters.remote-docker >>
+      - test-stage:
+          stage: << parameters.stage >>
+          options: "<< parameters.options >>"
+  generic-publish-job:
+    parameters:
+      stage:
+        type: string
+    executor: docker-cli
+    steps:
+      - init
+      - publish-stage:
+          stage: << parameters.stage >>
+
+workflows:
+  all:
+    jobs:
+      # root
+      - generic-build-job:
+          name: build-root
+          stage: root
+      - generic-test-job:
+          name: test-root
+          stage: root
+          requires:
+            - build-root
+      - generic-publish-job:
+          name: publish-root
+          stage: root
+          requires:
+            - test-root
+          filters:
+            tags:
+              only: /v.*/
+            branches:
+              ignore: /.*/
+      # build
+      - generic-build-job:
+          name: build-build
+          stage: build
+          from: root
+          requires:
+            - test-root
+      - generic-test-job:
+          name: test-build
+          stage: build
+          requires:
+            - build-build
+      - generic-publish-job:
+          name: publish-build
+          stage: build
+          requires:
+            - test-build
+          filters:
+            tags:
+              only: /v.*/
+            branches:
+              ignore: /.*/
+      # build-sbt
+      - generic-build-job:
+          name: build-build-sbt
+          stage: build-sbt
+          from: build
+          requires:
+            - test-build
+      - generic-test-job:
+          name: test-build-sbt
+          stage: build-sbt
+          requires:
+            - build-build-sbt
+      - generic-publish-job:
+          name: publish-build-sbt
+          stage: build-sbt
+          requires:
+            - test-build-sbt
+          filters:
+            tags:
+              only: /v.*/
+            branches:
+              ignore: /.*/
+      # run
+      - generic-build-job:
+          name: build-run
+          stage: run
+          from: root
+          requires:
+            - test-root
+      - generic-test-job:
+          name: test-run
+          stage: run
+          requires:
+            - build-run
+      - generic-publish-job:
+          name: publish-run
+          stage: run
+          requires:
+            - test-run
+          filters:
+            tags:
+              only: /v.*/
+            branches:
+              ignore: /.*/
+      # run-jre
+      - generic-build-job:
+          name: build-run-jre
+          stage: run-jre
+          from: run
+          requires:
+            - test-run
+      - generic-test-job:
+          name: test-run-jre
+          stage: run-jre
+          requires:
+            - build-run-jre
+      - generic-publish-job:
+          name: publish-run-jre
+          stage: run-jre
+          requires:
+            - test-run-jre
+          filters:
+            tags:
+              only: /v.*/
+            branches:
+              ignore: /.*/

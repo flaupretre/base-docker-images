@@ -1,0 +1,23 @@
+#
+# runtime base
+# 
+#=============================================================================
+
+ARG IMAGE_PREFIX
+ARG VERSION
+
+FROM ${IMAGE_PREFIX}root:${VERSION}
+
+ARG STAGE
+
+ARG DUSER_UID
+ARG GOSS_VER
+
+#--
+
+USER 0
+
+ADD docker/${STAGE} /docker.${STAGE}/
+RUN /docker.${STAGE}/build.sh
+
+USER ${DUSER_UID}

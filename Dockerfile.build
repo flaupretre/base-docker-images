@@ -1,0 +1,22 @@
+#
+# build base - This image is to be used as a base for 'builder' images
+# 
+#=============================================================================
+
+ARG IMAGE_PREFIX
+ARG VERSION
+
+FROM ${IMAGE_PREFIX}root:${VERSION}
+
+ARG STAGE
+
+ARG DUSER_UID
+
+#--
+
+USER 0
+
+ADD docker/${STAGE} /docker.${STAGE}/
+RUN /docker.${STAGE}/build.sh
+
+USER ${DUSER_UID}
